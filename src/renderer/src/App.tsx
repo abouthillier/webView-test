@@ -1,146 +1,170 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { getIframeStyles } from './iframeStyles'
 import './scss/App.scss'
 
-// Type definitions for Electron webview
 declare global {
-	interface Window {
-		electron: {
-			webview: {
-				goBack: () => Promise<void>
-				canGoBack: () => Promise<boolean>
-				getURL: () => Promise<string>
-			}
-		}
-	}
+  interface HTMLIFrameElement {
+    _styleObserver?: MutationObserver;
+  }
 }
 
-// Create a type for the webview element with our custom methods
-type ElectronWebView = Electron.WebViewTag
-
 function App(): React.JSX.Element {
-	const webviewRef = useRef<ElectronWebView>(null)
+	const iframeRef = useRef<HTMLIFrameElement>(null)
 	const [canGoBack, setCanGoBack] = useState(false)
 	const [currentUrl, setCurrentUrl] = useState(
 		'https://triviuminteractive.com'
 	)
 	const [isWebViewReady, setIsWebViewReady] = useState(false)
 	const [error, setError] = useState<string | null>(null)
+	const historyStack = useRef<string[]>([])
+	const currentIndex = useRef(-1)
 
-	// Update navigation state
-	const updateNavigationState = useCallback(async () => {
-		const webview = webviewRef.current
-		if (!webview || !isWebViewReady) return
-
+	// Inside your App component, add this function
+	const setupIframeStyles = (iframe: HTMLIFrameElement, baseUrl: string) => {
 		try {
-			// Use type assertion to access the webview methods
-			const webviewElement = webview as unknown as ElectronWebView
+			if (!iframe.contentDocument) return
 
-			// Check if the webview has the executeJavaScript method
-			if (typeof webviewElement.executeJavaScript === 'function') {
-				const [url, canGoBack] = await Promise.all([
-					webviewElement.executeJavaScript<string>(
-						'window.location.href'
-					),
-					webviewElement.executeJavaScript<boolean>(
-						'window.history.length > 1'
-					)
-				])
+			// Create or update style element
+			let style = iframe.contentDocument.getElementById(
+				'external-link-styles'
+			)
+			if (!style) {
+				style = iframe.contentDocument.createElement('style')
+				style.id = 'external-link-styles'
+				iframe.contentDocument.head.appendChild(style)
+			}
 
-				setCurrentUrl(url || currentUrl)
-				setCanGoBack(canGoBack)
-			} else {
-				// Fallback to using the URL from the webview if executeJavaScript is not available
-				const url = webviewElement.getURL
-					? webviewElement.getURL()
-					: currentUrl
-				setCurrentUrl(url)
-				setCanGoBack(
-					webviewElement.canGoBack
-						? webviewElement.canGoBack()
-						: false
+			// Get the origin for the current URL
+			let origin
+			try {
+				origin = new URL(baseUrl).origin
+			} catch (e) {
+				console.error('Invalid URL:', baseUrl)
+				return
+			}
+
+			// Update styles
+			style.textContent = getIframeStyles(origin)
+
+			// Set up MutationObserver to reapply styles when DOM changes
+			if (!iframe._styleObserver) {
+				iframe._styleObserver = new MutationObserver((mutations) => {
+					// Reapply styles when nodes are added
+					if (mutations.some((m) => m.addedNodes.length > 0)) {
+						setupIframeStyles(iframe, baseUrl)
+					}
+				})
+
+				// Start observing the document
+				iframe._styleObserver.observe(
+					iframe.contentDocument.documentElement,
+					{
+						childList: true,
+						subtree: true
+					}
 				)
 			}
-		} catch (error) {
-			console.error('Error updating navigation state:', error)
+		} catch (err) {
+			console.error('Error in setupIframeStyles:', err)
 		}
-	}, [currentUrl, isWebViewReady])
+	}
 
 	// Handle back button click
-	const handleGoBack = useCallback(async () => {
-		const webview = webviewRef.current
-		if (!webview || !isWebViewReady) return
-
-		try {
-			const webviewElement = webview as unknown as ElectronWebView
-
-			if (typeof webviewElement.executeJavaScript === 'function') {
-				await webviewElement.executeJavaScript('window.history.back()')
-			} else if (typeof webviewElement.goBack === 'function') {
-				webviewElement.goBack()
+	const handleGoBack = useCallback(() => {
+		if (currentIndex.current > 0) {
+			currentIndex.current--
+			const prevUrl = historyStack.current[currentIndex.current]
+			if (prevUrl && iframeRef.current) {
+				iframeRef.current.src = prevUrl
+				setCurrentUrl(prevUrl)
+				setCanGoBack(currentIndex.current > 0)
 			}
-			// The navigation events will trigger updateNavigationState
-		} catch (error) {
-			console.error('Error going back:', error)
 		}
-	}, [isWebViewReady])
+	}, [])
 
-	// Handle standard HTML error event
-	const handleStandardError = useCallback(
-		(event: React.SyntheticEvent<HTMLWebViewElement, Event>) => {
-			console.error('WebView error:', event)
-			setError('An error occurred while loading the page')
+	// Update navigation state when URL changes
+	const updateNavigationState = useCallback(
+		(newUrl: string, isBackNavigation = false) => {
+			setCurrentUrl(newUrl)
+
+			// Only update history stack if this is not a back navigation
+			if (!isBackNavigation) {
+				// If we're not at the end of the stack, truncate the stack
+				if (currentIndex.current < historyStack.current.length - 1) {
+					historyStack.current = historyStack.current.slice(
+						0,
+						currentIndex.current + 1
+					)
+				}
+				historyStack.current.push(newUrl)
+				currentIndex.current = historyStack.current.length - 1
+			}
+
+			setCanGoBack(currentIndex.current > 0)
 		},
 		[]
 	)
 
-	// Handle webview ready state
-	const handleWebViewReady = useCallback(() => {
-		console.log('WebView is ready')
-		setIsWebViewReady(true)
-		setError(null)
-		updateNavigationState()
-	}, [updateNavigationState])
+	// Update your handleWebViewReady function
+	const handleWebViewReady = useCallback(
+		(e: React.SyntheticEvent<HTMLIFrameElement>) => {
+			try {
+				const iframe = e.target as HTMLIFrameElement
+				const newUrl =
+					iframe.src ||
+					iframe.contentWindow?.location.href ||
+					currentUrl
 
-	// Set up event listeners
-	useEffect(() => {
-		const webview = webviewRef.current
-		if (!webview) return
+				// Setup iframe styles
+				setupIframeStyles(iframe, newUrl)
 
-		const handleLoad = () => updateNavigationState()
+				// Rest of your existing code...
+				if (historyStack.current.length === 0) {
+					historyStack.current = [newUrl]
+					currentIndex.current = 0
+				}
 
-		// Add event listeners with proper typing
-		const webviewElement = webview as unknown as ElectronWebView
+				if (newUrl !== currentUrl) {
+					updateNavigationState(newUrl)
+				}
 
-		// Add event listeners with proper typing
-		webviewElement.addEventListener('dom-ready', handleWebViewReady)
-		webviewElement.addEventListener('did-navigate', handleLoad)
-		webviewElement.addEventListener('did-navigate-in-page', handleLoad)
-		webviewElement.addEventListener('did-stop-loading', handleLoad)
-
-		// Initial check after a short delay to ensure the webview is ready
-		const initTimer = setTimeout(() => {
-			if (!isWebViewReady) {
-				console.log('Initial webview state check')
-				updateNavigationState()
+				setIsWebViewReady(true)
+				setError(null)
+			} catch (err) {
+				console.error('Error in handleWebViewReady:', err)
+				setError('Failed to load page')
 			}
-		}, 1000)
+		},
+		[currentUrl, updateNavigationState]
+	)
 
-		// Cleanup
+	// Update iframe configuration
+	const iframeProps = {
+		ref: iframeRef,
+		src: currentUrl,
+		onLoad: handleWebViewReady,
+		onError: (e: React.SyntheticEvent<HTMLIFrameElement>) => {
+			console.error('Error loading page:', e)
+			setError('Failed to load page')
+		},
+		allow: '*',
+		sandbox: 'allow-scripts allow-same-origin allow-forms'
+	}
+
+	// Add cleanup in a useEffect
+	useEffect(() => {
 		return () => {
-			webviewElement.removeEventListener('dom-ready', handleWebViewReady)
-			webviewElement.removeEventListener('did-navigate', handleLoad)
-			webviewElement.removeEventListener(
-				'did-navigate-in-page',
-				handleLoad
-			)
-			webviewElement.removeEventListener('did-stop-loading', handleLoad)
-			clearTimeout(initTimer)
+			const iframe = iframeRef.current
+			if (iframe?._styleObserver) {
+				iframe._styleObserver.disconnect()
+				delete iframe._styleObserver
+			}
 		}
-	}, [updateNavigationState, handleWebViewReady, isWebViewReady])
+	}, [])
 
 	return (
 		<div className="app">
-			<div className="navigation-bar">
+			<div className="toolbar">
 				<button
 					className={`back-button ${!canGoBack ? 'disabled' : ''}`}
 					disabled={!canGoBack}
@@ -148,30 +172,9 @@ function App(): React.JSX.Element {
 				>
 					← Back
 				</button>
-				<div className="url-display">{currentUrl}</div>
 			</div>
 			<div className="webview-container">
-				{error ? (
-					<div className="error-message">
-						<p>Error loading page: {error}</p>
-						<button onClick={() => window.location.reload()}>
-							Reload
-						</button>
-					</div>
-				) : (
-					<>
-						{/* Using type assertion for custom Electron webview events */}
-						<webview
-							ref={webviewRef}
-							src={currentUrl}
-							onError={handleStandardError}
-							webpreferences="contextIsolation=yes, nodeIntegration=no, sandbox=yes"
-							nodeintegration={false}
-							disablewebsecurity={false}
-							// partition="persist:trivium-view"
-						/>
-					</>
-				)}
+				<iframe {...iframeProps} />
 			</div>
 		</div>
 	)

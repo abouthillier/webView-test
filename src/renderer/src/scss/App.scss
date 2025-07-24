@@ -1,8 +1,9 @@
 html {
-	margin: 0;
 	scrollbar-width: none;
+
 	body {
 		height: 100vh;
+		margin: 0;
 
 		&::-webkit-scrollbar {
 			display: none;
@@ -10,6 +11,7 @@ html {
 		#root {
 			height: 100%;
 			width: 100%;
+
 			.app {
 				height: 100vh;
 				display: flex;
@@ -47,9 +49,10 @@ html {
 					flex: 1;
 					position: relative;
 
-					webview {
+					iframe {
 						height: 100%;
 						width: 100%;
+						border: none;
 					}
 				}
 			}

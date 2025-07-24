@@ -18,7 +18,6 @@ function createWindow(): void {
 			sandbox: true,
 			webSecurity: true,
 			allowRunningInsecureContent: false,
-			webviewTag: true,
 			preload: join(__dirname, '../preload/index.js')
 		}
 	})
